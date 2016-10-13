@@ -1,0 +1,152 @@
+================================
+Environment
+================================
+
+#### Repo & Packages ####
+apt-get update
+apt-get install software-properties-common
+add-apt-repository cloud-archive:liberty
+apt-get update && apt-get upgrade -y
+apt-get install python-openstackclient chrony
+
+#### Host Mapping ####
+sed -i '/127.0.1.1/d' /etc/hosts
+echo "10.0.0.10 controller" >> /etc/hosts
+echo "10.0.0.20 compute" >> /etc/hosts
+echo "10.0.0.30 cinder" >> /etc/hosts
+echo "10.0.0.40 swift1" >> /etc/hosts
+echo "10.0.0.41 swift2" >> /etc/hosts
+reboot
+
+### MariaDB ###
+apt-get install mariadb-server python-pymysql
+cd /etc/mysql
+cp my.cnf conf.d/mysqld_openstack.cnf
+nano conf.d/mysqld_openstack.cnf
+nano my.cnf
+service mysql restart
+
+### MongoDB ###
+apt-get install mongodb-server mongodb-clients python-pymongo
+nano /etc/mongodb.conf
+service mongodb stop
+rm /var/lib/mongodb/journal/prealloc.*
+service mongodb start
+
+### RabbitMQ ###
+apt-get install rabbitmq-server
+rabbitmqctl add_user openstack root
+rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+
+### Memcached ###
+apt-get install memcached python-memcache
+nano /etc/memcached.conf
+service memcached restart
+
+################# Keystone #####################
+### Keystone DB & Config ###
+mysql -uroot -p1 -e "CREATE DATABASE keystone;"
+mysql -uroot -p1 -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY 'keystone';"
+mysql -uroot -p1 -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY 'keystone';
+openssl rand -hex 10
+echo "manual" > /etc/init/keystone.override
+apt-get install -y keystone apache2 libapache2-mod-wsgi
+nano /etc/keystone/keystone.conf
+su -s /bin/sh -c "keystone-manage db_sync" keystone
+
+### Apache Config ###
+nano /etc/apache/apache.conf
+nano /etc/apache2/sites-available/wsgi-keystone.conf
+ln -s /etc/apache2/sites-available/wsgi-keystone.conf /etc/apache2/sites-enabled
+service apache2 restart
+rm -f /var/lib/keystone/keystone.db
+
+### Service Entity & API ###
+export OS_TOKEN=ADMIN_TOKEN
+export OS_URL=http://10.0.0.10:35357/v3
+export OS_IDENTITY_API_VERSION=3
+openstack service create --name keystone --description "IDN OpenStack Identity" identity
+openstack endpoint create --region RegionOne identity public http://10.0.0.10:5000/v3
+openstack endpoint create --region RegionOne identity internal http://10.0.0.10:5000/v3
+openstack endpoint create --region RegionOne identity admin http://10.0.0.10:35357/v3
+
+### Domain, projects, users, roles ###
+openstack project create --domain default --description "IDN Admin Project" admin
+openstack user create --domain default --password-prompt admin
+openstack role create admin
+openstack role add --project admin --user admin admin
+openstack project create --domain default --description "IDN Demo Project" demo
+openstack user create --domain default --password-prompt demo
+openstack role create demo
+openstack role add --project demo --user demo user
+nano /etc/keystone/keystone-paste.ini
+unset OS_TOKEN OS_URL
+openstack --os-auth-url http://10.0.0.10:35357/v3 \
+  --os-project-domain-id default --os-user-domain-id default \
+  --os-project-name admin --os-username admin --os-auth-type password \
+  token issue
+openstack --os-auth-url http://10.0.0.10:5000/v3 \
+  --os-project-domain-id default --os-user-domain-id default \
+  --os-project-name demo --os-username demo --os-auth-type password \
+  token issue
+nano admin-openrc.sh
+nano demo-openrc.sh
+source admin-openrc.sh
+openstack token issue
+
+### SSL Keystone ###
+nano /etc/keystone/keystone.conf
+service keystone restart
+
+### Glance ###
+mysql -uroot -p1 -e "CREATE DATABASE glance;"
+mysql -uroot -p1 -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY 'glance';"
+mysql -uroot -p1 -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY 'glance';"
+source admin-openrc.sh
+openstack user create --domain default --password-prompt glance
+openstack role add --project service --user glance admin
+openstack service create --name glance --description "IDN OpenStack Image service" image
+openstack endpoint create --region RegionOne image public http://10.0.0.10:9292
+openstack endpoint create --region RegionOne image internal http://10.0.0.10:9292
+openstack endpoint create --region RegionOne image admin http://10.0.0.10:9292
+apt-get install glance python-glanceclient -y
+su -s /bin/sh -c "glance-manage db_sync" glance
+rm -f /var/lib/glance/glance.sqlite
+service glance-registry restart
+service glance-api restart
+echo "export OS_IMAGE_API_VERSION=2" | tee -a admin-openrc.sh demo-openrc.sh
+source admin-openrc.sh
+wget http://download.cirros-cloud.net/0.3.4/cirros-0.3.4-x86_64-disk.img
+glance image-create --name "IDN-cirros" --file cirros-0.3.4-x86_64-disk.img --disk-format qcow2 --container-format bare --visibility public --progress
+glance image-list
+
+### Nova ###
+mysql -uroot -pRAHASIA -e "CREATE DATABASE nova;"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY 'nova';"
+mysql -uroot -pRAHASIA -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY 'nova';
+source admin-openrc.sh
+openstack user create --domain default --password-prompt nova
+openstack role add --project service --user nova admin
+openstack service create --name nova --description "IDN OpenStack Compute" compute
+openstack endpoint create --region RegionOne compute public http://10.0.0.10:8774/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne compute internal http://10.0.0.10:8774/v2/%\(tenant_id\)s
+openstack endpoint create --region RegionOne compute admin http://10.0.0.10:8774/v2/%\(tenant_id\)s
+apt-get install nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient
+su -s /bin/sh -c "nova-manage db sync" nova
+service nova-api restart
+service nova-cert restart
+service nova-consoleauth restart
+service nova-scheduler restart
+service nova-conductor restart
+service nova-novncproxy restart
+rm -f /var/lib/nova/nova.sqlite
+
+===========================================================================
+###### LANJUTKAN KONFIGURASI NOVA PADA NODE COMPUTE ########
+===========================================================================
+
+
+
+
+
+
