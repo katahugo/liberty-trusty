@@ -1,32 +1,25 @@
-heat_template_version: 2014-10-16
-description: >
-   One VM Example 
- parameters: 
-   network:
-     type: string
-     description: Network for VM
-     default: demo-net
-   image:
-     type: string
-     description: Cirros Image for VM
-     default: cirros-0.3.4-x86_64 
-   resources:
-   my_server:
-     type: OS::Nova::Server
-     properties:
-       flavor: m1.tiny
-       key_name: tes
-       networks:
-       - network: { get_param: network }
-       image: { get_param: image }
-       user_data: |
-         #!/bin/sh
-         echo "Instance started :)"
-       user_data_format: RAW 
-   outputs: 
-   instance_name:
-     description: The name of VM
-     value: { get_attr: [my_server, name] }
-   private_ip:
-     description: The private IP of VM
-     value: { get_attr: [ my_server, first_address ] }
+heat_template_version: 2014-10-15
+description: Launch a basic instance with CirrOS image using the
+             ``m1.tiny`` flavor, ``mykey`` key,  and one network.
+
+parameters:
+  NetID:
+    type: string
+    description: Network ID to use for the instance.
+
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      image: IDN-cirros
+      flavor: m1.tiny
+      networks:
+      - network: { get_param: NetID }
+
+outputs:
+  instance_name:
+    description: Name of the instance.
+    value: { get_attr: [ server, name ] }
+  instance_ip:
+    description: IP address of the instance.
+    value: { get_attr: [ server, first_address ] }
